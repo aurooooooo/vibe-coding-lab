@@ -2,15 +2,16 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import json
 import os
+import sys
 import datetime
 import calendar
 
 # --- 常量定义 ---
+DATA_FOLDER_NAME = "data"
 CONFIG_FILE_NAME = "todo_config.json"
 DATA_FILE_NAME = "todo_data.json"
 DEFAULT_FONT_SIZE = 14
 DEFAULT_OPACITY = 0.98
-# 窗口初始尺寸
 INIT_W, INIT_H = 400, 500
 MIN_WIDTH, MIN_HEIGHT = 350, 450
 
@@ -46,20 +47,71 @@ class ModernTodoApp:
         self.settings_win = None
         self.calendar_win = None
 
-        # 加载配置
-        self.base_path = os.path.dirname(os.path.abspath(__file__))
-        self.config_path = os.path.join(self.base_path, CONFIG_FILE_NAME)
+        # --- [核心修复] 终极路径判定逻辑 ---
+        # 1. 尝试获取 Nuitka/PyInstaller 的原始路径
+        if getattr(sys, 'frozen', False):
+            # Nuitka/PyInstaller 打包环境
+            # 优先尝试 sys.argv[0]，因为它通常指向启动的 .exe 全路径
+            self.app_root_path = os.path.dirname(os.path.abspath(sys.argv[0]))
+        else:
+            # 开发环境
+            self.app_root_path = os.path.dirname(os.path.abspath(__file__))
+
+        # [调试功能] 如果发现路径不对（比如是在 Temp 文件夹），启用备用方案
+        # 很多时候 Temp 文件夹路径包含 "AppData" 或 "Temp"
+        if "AppData" in self.app_root_path or "Temp" in self.app_root_path:
+            # 备用方案：尝试使用当前工作目录 (CWD)
+            # 当你双击 exe 时，CWD 通常就是 exe 所在的目录
+            self.app_root_path = os.getcwd()
+
+        # 定义数据文件夹
+        self.default_data_dir = os.path.join(self.app_root_path, DATA_FOLDER_NAME)
+
+        # 尝试创建文件夹，如果权限不足（例如在 C 盘根目录），则回退到用户文档目录
+        try:
+            if not os.path.exists(self.default_data_dir):
+                os.makedirs(self.default_data_dir)
+            # 测试写入权限
+            test_file = os.path.join(self.default_data_dir, ".perm_test")
+            with open(test_file, 'w') as f:
+                f.write("test")
+            os.remove(test_file)
+        except Exception as e:
+            # 权限不足，回退到【我的文档/Focus_Data】目录
+            user_docs = os.path.join(os.path.expanduser("~"), "Documents", "Focus_Data")
+            if not os.path.exists(user_docs):
+                os.makedirs(user_docs)
+            self.default_data_dir = user_docs
+            # 此时弹窗提示用户（仅第一次）
+            messagebox.showwarning("路径权限提示",
+                                   f"软件所在的目录无法写入数据。\n数据将保存到：\n{self.default_data_dir}")
+
+        # 4. 路径设定完成
+        self.config_path = os.path.join(self.default_data_dir, CONFIG_FILE_NAME)
         self.config = self.load_config()
+
+        # 5. 加载数据位置
+        saved_data_dir = self.config.get("data_dir", "")
+        if saved_data_dir and os.path.exists(saved_data_dir):
+            self.data_dir = saved_data_dir
+        else:
+            self.data_dir = self.default_data_dir
+            self.save_config()
+
+        self.data_file_path = os.path.join(self.data_dir, DATA_FILE_NAME)
+
+        # --- [调试弹窗] ---
+        # 编译完成后，如果是第一次运行不确定路径，可以保留这几行
+        # 确认路径无误后，请删除下面这3行代码
+        # debug_msg = f"检测到的运行目录:\n{self.app_root_path}\n\n数据存储目录:\n{self.data_dir}"
+        # messagebox.showinfo("调试模式 - 路径检测", debug_msg)
+        # ------------------
 
         # 应用参数
         self.font_size = self.config.get("font_size", DEFAULT_FONT_SIZE)
         self.is_topmost = self.config.get("is_topmost", False)
         self.theme_mode = self.config.get("theme", "dark")
-        self.data_dir = self.config.get("data_dir", self.base_path)
         self.opacity = self.config.get("opacity", DEFAULT_OPACITY)
-
-        if not os.path.exists(self.data_dir):
-            self.data_dir = self.base_path
 
         self.current_date = datetime.date.today()
         self.tasks_data = self.load_tasks_data()
@@ -86,23 +138,28 @@ class ModernTodoApp:
     # --- 核心配置 ---
     def load_config(self):
         default_config = {
-            "font_size": DEFAULT_FONT_SIZE, "is_topmost": False,
-            "theme": "dark", "data_dir": self.base_path,
-            "opacity": DEFAULT_OPACITY
+            "font_size": DEFAULT_FONT_SIZE,
+            "is_topmost": False,
+            "theme": "dark",
+            "opacity": DEFAULT_OPACITY,
+            "data_dir": self.default_data_dir
         }
         if os.path.exists(self.config_path):
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
-                    default_config.update(json.load(f))
+                    loaded = json.load(f)
+                    default_config.update(loaded)
             except:
                 pass
         return default_config
 
     def save_config(self):
         self.config.update({
-            "font_size": self.font_size, "is_topmost": self.is_topmost,
-            "theme": self.theme_mode, "data_dir": self.data_dir,
-            "opacity": self.opacity
+            "font_size": self.font_size,
+            "is_topmost": self.is_topmost,
+            "theme": self.theme_mode,
+            "opacity": self.opacity,
+            "data_dir": self.data_dir
         })
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
@@ -111,20 +168,18 @@ class ModernTodoApp:
             pass
 
     def load_tasks_data(self):
-        data_path = os.path.join(self.data_dir, DATA_FILE_NAME)
-        if os.path.exists(data_path):
+        if os.path.exists(self.data_file_path):
             try:
-                with open(data_path, "r", encoding="utf-8") as f:
+                with open(self.data_file_path, "r", encoding="utf-8") as f:
                     return json.load(f)
             except:
                 return {}
         return {}
 
     def save_tasks_data(self):
-        data_path = os.path.join(self.data_dir, DATA_FILE_NAME)
         try:
-            with open(data_path, "w", encoding="utf-8") as f:
-                json.dump(self.tasks_data, f, ensure_ascii=False)
+            with open(self.data_file_path, "w", encoding="utf-8") as f:
+                json.dump(self.tasks_data, f, ensure_ascii=False, indent=2)
         except:
             pass
 
@@ -135,66 +190,41 @@ class ModernTodoApp:
         self.font_icon = ("Arial", 16)
         self.font_ui_small = ("Segoe UI", int(self.font_size * 0.85))
         self.font_ui_bold = ("Segoe UI", int(self.font_size * 0.85), "bold")
-        # 日历专用字体 - 跟随主字号
         self.font_cal_header = ("Segoe UI", int(self.font_size * 0.8), "bold")
         self.font_cal_weekday = ("Segoe UI", int(self.font_size * 0.65))
         self.font_cal_day = ("Segoe UI", int(self.font_size * 0.65))
         self.font_cal_day_bold = ("Segoe UI", int(self.font_size * 0.65), "bold")
 
-    # --- 自定义复选框组件 ---
+    # --- 自定义复选框 ---
     def create_checkbox(self, parent, checked=False, size=22, command=None):
-        """创建方形复选框，勾选时显示√"""
         canvas = tk.Canvas(parent, width=size, height=size,
                            bg=self.colors['bg'], highlightthickness=0, cursor="hand2")
-
-        # 保存状态和回调
         canvas.checked = checked
         canvas.command = command
         canvas.size = size
-
-        # 绘制复选框
         self._draw_checkbox(canvas)
-
-        # 绑定点击事件
         canvas.bind("<Button-1>", lambda e: self._toggle_checkbox(canvas))
-
         return canvas
 
     def _draw_checkbox(self, canvas):
-        """绘制复选框内容"""
         canvas.delete("all")
         size = canvas.size
         padding = 2
         border_width = 2
-
         if canvas.checked:
-            # 已勾选：填充背景 + 绘制√
-            # 绘制填充的圆角矩形背景
-            canvas.create_rectangle(
-                padding, padding, size - padding, size - padding,
-                fill=self.colors['checkbox_fill'],
-                outline=self.colors['checkbox_fill'],
-                width=0
-            )
-            # 绘制√符号
+            canvas.create_rectangle(padding, padding, size - padding, size - padding,
+                                    fill=self.colors['checkbox_fill'], outline=self.colors['checkbox_fill'], width=0)
             check_color = "#FFFFFF"
-            # √的坐标点（相对于size缩放）
             x1, y1 = size * 0.22, size * 0.5
             x2, y2 = size * 0.42, size * 0.72
             x3, y3 = size * 0.78, size * 0.28
             canvas.create_line(x1, y1, x2, y2, fill=check_color, width=2, capstyle='round')
             canvas.create_line(x2, y2, x3, y3, fill=check_color, width=2, capstyle='round')
         else:
-            # 未勾选：只绘制边框
-            canvas.create_rectangle(
-                padding, padding, size - padding, size - padding,
-                fill="",
-                outline=self.colors['checkbox_border'],
-                width=border_width
-            )
+            canvas.create_rectangle(padding, padding, size - padding, size - padding,
+                                    fill="", outline=self.colors['checkbox_border'], width=border_width)
 
     def _toggle_checkbox(self, canvas):
-        """切换复选框状态"""
         canvas.checked = not canvas.checked
         self._draw_checkbox(canvas)
         if canvas.command:
@@ -204,16 +234,13 @@ class ModernTodoApp:
     def setup_ui(self):
         self.colors = THEMES[self.theme_mode]
         self.root.configure(bg=self.colors['bg'])
-
         for widget in self.root.winfo_children():
             widget.destroy()
 
-        # 0. 主容器 (带边框)
         self.main_container = tk.Frame(self.root, bg=self.colors['bg'],
                                        highlightthickness=1, highlightbackground=self.colors['border'])
         self.main_container.pack(fill='both', expand=True)
 
-        # 1. 顶部控制栏
         self.title_bar = tk.Frame(self.main_container, bg=self.colors['bg'], height=40)
         self.title_bar.pack(fill='x', pady=(10, 0), padx=20)
         self.title_bar.bind("<ButtonPress-1>", self.start_move)
@@ -249,14 +276,11 @@ class ModernTodoApp:
         btn_close.bind("<Enter>", lambda e: btn_close.config(fg='#EF4444'))
         btn_close.bind("<Leave>", lambda e: btn_close.config(fg=self.colors['sub_text']))
 
-        # 2. 日期导航
         header_frame = tk.Frame(self.main_container, bg=self.colors['bg'])
         header_frame.pack(fill='x', padx=20, pady=(15, 5))
-
         nav_frame = tk.Frame(header_frame, bg=self.colors['bg'])
         nav_frame.pack(fill='x')
 
-        # 左箭头
         btn_prev = tk.Label(nav_frame, text="<", font=self.font_bold, fg=self.colors['sub_text'], bg=self.colors['bg'],
                             cursor="hand2", width=3)
         btn_prev.pack(side='left')
@@ -264,7 +288,6 @@ class ModernTodoApp:
         btn_prev.bind("<Enter>", lambda e: btn_prev.config(fg=self.colors['accent']))
         btn_prev.bind("<Leave>", lambda e: btn_prev.config(fg=self.colors['sub_text']))
 
-        # 右箭头
         btn_next = tk.Label(nav_frame, text=">", font=self.font_bold, fg=self.colors['sub_text'], bg=self.colors['bg'],
                             cursor="hand2", width=3)
         btn_next.pack(side='right')
@@ -272,14 +295,11 @@ class ModernTodoApp:
         btn_next.bind("<Enter>", lambda e: btn_next.config(fg=self.colors['accent']))
         btn_next.bind("<Leave>", lambda e: btn_next.config(fg=self.colors['sub_text']))
 
-        # 日期文本容器
         date_container = tk.Frame(nav_frame, bg=self.colors['bg'])
         date_container.pack(fill='both', expand=True)
-
         self.lbl_date = tk.Label(date_container, text="", font=self.font_title, bg=self.colors['bg'],
                                  fg=self.colors['fg'], cursor="hand2")
         self.lbl_date.pack(expand=True)
-
         self.lbl_date.bind("<Button-1>", self._on_date_click)
         date_container.bind("<Button-1>", self._on_date_click)
 
@@ -294,13 +314,10 @@ class ModernTodoApp:
         date_container.bind("<Enter>", on_date_enter)
         date_container.bind("<Leave>", on_date_leave)
 
-        # 3. 输入区域
         self.entry_frame = tk.Frame(self.main_container, bg=self.colors['bg'])
         self.entry_frame.pack(fill='x', padx=20, pady=15)
-
         input_container = tk.Frame(self.entry_frame, bg=self.colors['input_bg'], padx=10, pady=5)
         input_container.pack(fill='x')
-
         self.entry = tk.Entry(input_container, font=self.font_main, bg=self.colors['input_bg'],
                               fg=self.colors['input_fg'], bd=0, insertbackground=self.colors['fg'])
         self.entry.pack(side='left', fill='both', expand=True, pady=3)
@@ -310,31 +327,24 @@ class ModernTodoApp:
         self.entry.bind("<FocusIn>", self.on_entry_focus_in)
         self.entry.bind("<FocusOut>", self.on_entry_focus_out)
         self.entry.bind("<Return>", self.add_task)
-
         self.btn_add = tk.Label(input_container, text="+", bg=self.colors['accent'], fg='#FFF',
                                 font=("Arial", 16, "bold"), width=3, cursor="hand2")
         self.btn_add.pack(side='right')
         self.btn_add.bind("<Button-1>", self.add_task)
 
-        # 4. 任务列表容器
         self.canvas = tk.Canvas(self.main_container, bg=self.colors['bg'], bd=0, highlightthickness=0)
         self.scroll_frame = tk.Frame(self.canvas, bg=self.colors['bg'])
-
         self.canvas.bind('<Configure>', self.on_canvas_configure)
         self.scroll_frame.bind("<Configure>", self.on_frame_configure)
-
         self.canvas_window = self.canvas.create_window((0, 0), window=self.scroll_frame, anchor="nw", width=INIT_W - 45)
-
         self.canvas.pack(side="left", fill="both", expand=True, padx=20, pady=(0, 20))
 
-        # 5. Grip
         self.grip = tk.Label(self.root, text=" ", bg=self.colors['bg'], cursor="size_nw_se")
         self.grip.place(relx=1.0, rely=1.0, anchor="se", width=15, height=15)
         self.grip.bind("<ButtonPress-1>", self.start_resize)
         self.grip.bind("<B1-Motion>", self.do_resize)
 
     def _on_date_click(self, event=None):
-        """处理日期点击事件，打开日历"""
         self.open_calendar()
 
     def on_canvas_configure(self, event):
@@ -352,7 +362,7 @@ class ModernTodoApp:
         self.settings_win = tk.Toplevel(self.root)
         self.settings_win.title("")
         self.settings_win.attributes('-topmost', True)
-        self.settings_win.geometry("420x480")
+        self.settings_win.geometry("420x380")
         self.settings_win.configure(bg=self.colors['bg'])
         self.settings_win.overrideredirect(True)
 
@@ -362,57 +372,44 @@ class ModernTodoApp:
 
         tk.Frame(self.settings_win, bg=self.colors['border'], bd=1).place(x=0, y=0, relwidth=1, relheight=1)
 
-        # Header
         header = tk.Frame(self.settings_win, bg=self.colors['bg'], height=50)
         header.pack(fill='x', padx=2, pady=2)
-
         title_lbl = tk.Label(header, text="偏好设置", fg=self.colors['fg'], bg=self.colors['bg'],
                              font=self.font_ui_bold)
         title_lbl.place(relx=0.5, rely=0.5, anchor="center")
-
         close_btn = tk.Label(header, text="×", fg=self.colors['sub_text'], bg=self.colors['bg'], font=("Arial", 18),
                              cursor="hand2")
         close_btn.pack(side='right', padx=10)
         close_btn.bind("<Button-1>", lambda e: self.settings_win.destroy())
         close_btn.bind("<Enter>", lambda e: close_btn.config(fg=self.colors['fg']))
 
-        # Scrollable Area
         container = tk.Frame(self.settings_win, bg=self.colors['bg'])
         container.pack(fill='both', expand=True, padx=2, pady=2)
-
         canvas = tk.Canvas(container, bg=self.colors['bg'], highlightthickness=0)
         scrollbar = tk.Scrollbar(container, orient="vertical", command=canvas.yview)
         scrollable_frame = tk.Frame(canvas, bg=self.colors['bg'])
-
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
 
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
         self.settings_win.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>"))
-
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw", width=380)
         canvas.configure(yscrollcommand=scrollbar.set)
-
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
         content = tk.Frame(scrollable_frame, bg=self.colors['bg'], padx=25, pady=10)
         content.pack(fill='both', expand=True)
 
-        # --- 配色方案 ---
         tk.Label(content, text="配色方案", fg=self.colors['sub_text'], bg=self.colors['bg'],
                  font=self.font_ui_small).pack(anchor='w', pady=(15, 5))
         theme_btn_text = "切换至 浅色模式 ☀" if self.theme_mode == "dark" else "切换至 深色模式 🌙"
         tk.Button(content, text=theme_btn_text, command=lambda: [self.toggle_theme(), self.settings_win.destroy()],
-                  bg=self.colors['input_bg'], fg=self.colors['fg'],
-                  bd=0, font=self.font_ui_small, pady=8).pack(fill='x')
+                  bg=self.colors['input_bg'], fg=self.colors['fg'], bd=0, font=self.font_ui_small, pady=8).pack(
+            fill='x')
 
-        # --- 文字排版 ---
         tk.Label(content, text="文字排版", fg=self.colors['sub_text'], bg=self.colors['bg'],
                  font=self.font_ui_small).pack(anchor='w', pady=(20, 5))
         f_frame = tk.Frame(content, bg=self.colors['bg'])
@@ -427,125 +424,65 @@ class ModernTodoApp:
             self.settings_win.destroy()
             self.open_settings()
 
-        current_size = self.font_size
         for size in [14, 16, 18, 20]:
-            is_active = (size == current_size)
-            bg_c = self.colors['accent'] if is_active else self.colors['input_bg']
-            fg_c = '#FFF' if is_active else self.colors['fg']
+            bg_c = self.colors['accent'] if size == self.font_size else self.colors['input_bg']
+            fg_c = '#FFF' if size == self.font_size else self.colors['fg']
             tk.Button(f_frame, text=f"{size}", command=lambda s=size: set_font(s),
                       bg=bg_c, fg=fg_c, bd=0, width=5, font=self.font_ui_small).pack(side='left', padx=(0, 10))
 
-        # --- 背景透明度 ---
         tk.Label(content, text="背景透明度", fg=self.colors['sub_text'], bg=self.colors['bg'],
                  font=self.font_ui_small).pack(anchor='w', pady=(20, 5))
-
         opacity_frame = tk.Frame(content, bg=self.colors['bg'])
         opacity_frame.pack(fill='x')
-
-        # 透明度显示标签
         self.opacity_label = tk.Label(opacity_frame, text=f"{int(self.opacity * 100)}%",
-                                      fg=self.colors['fg'], bg=self.colors['bg'],
-                                      font=self.font_ui_bold, width=5)
+                                      fg=self.colors['fg'], bg=self.colors['bg'], font=self.font_ui_bold, width=5)
         self.opacity_label.pack(side='right')
-
-        # 使用 ttk.Scale 配合自定义样式实现橙色滑块
-        style = ttk.Style()
-        style.theme_use('clam')
-
-        # 配置橙色滑块样式
-        style.configure("Orange.Horizontal.TScale",
-                        background=self.colors['bg'],
-                        troughcolor=self.colors['input_bg'],
-                        sliderthickness=16,
-                        sliderlength=20)
-
-        style.map("Orange.Horizontal.TScale",
-                  background=[('active', self.colors['accent'])])
-
-        # 创建一个自定义滑块容器
         slider_container = tk.Frame(opacity_frame, bg=self.colors['bg'])
         slider_container.pack(side='left', fill='x', expand=True, padx=(0, 10))
-
-        # 使用Canvas绘制自定义滑块
-        self.opacity_canvas = tk.Canvas(slider_container, height=30, bg=self.colors['bg'],
-                                        highlightthickness=0, cursor="hand2")
+        self.opacity_canvas = tk.Canvas(slider_container, height=30, bg=self.colors['bg'], highlightthickness=0,
+                                        cursor="hand2")
         self.opacity_canvas.pack(fill='x', expand=True)
-
-        # 滑块参数
-        self.slider_padding = 10
-        self.slider_height = 6
-        self.knob_radius = 8
+        self.slider_padding, self.slider_height, self.knob_radius = 10, 6, 8
 
         def draw_slider(value):
             self.opacity_canvas.delete("all")
             width = self.opacity_canvas.winfo_width()
-            if width < 50:
-                width = 280
-
+            if width < 50: width = 280
             track_y = 15
-            track_left = self.slider_padding + self.knob_radius
-            track_right = width - self.slider_padding - self.knob_radius
+            track_left, track_right = self.slider_padding + self.knob_radius, width - self.slider_padding - self.knob_radius
             track_width = track_right - track_left
-
-            # 绘制轨道背景
-            self.opacity_canvas.create_rectangle(
-                track_left, track_y - self.slider_height // 2,
-                track_right, track_y + self.slider_height // 2,
-                fill=self.colors['input_bg'], outline=""
-            )
-
-            # 计算滑块位置 (value: 30-100)
+            self.opacity_canvas.create_rectangle(track_left, track_y - self.slider_height // 2, track_right,
+                                                 track_y + self.slider_height // 2,
+                                                 fill=self.colors['input_bg'], outline="")
             progress = (value - 30) / 70
             knob_x = track_left + progress * track_width
-
-            # 绘制已填充部分（橙色）
-            self.opacity_canvas.create_rectangle(
-                track_left, track_y - self.slider_height // 2,
-                knob_x, track_y + self.slider_height // 2,
-                fill=self.colors['accent'], outline=""
-            )
-
-            # 绘制滑块圆点（橙色）
-            self.opacity_canvas.create_oval(
-                knob_x - self.knob_radius, track_y - self.knob_radius,
-                knob_x + self.knob_radius, track_y + self.knob_radius,
-                fill=self.colors['accent'], outline=""
-            )
-
-        def on_slider_click(event):
-            update_slider_from_event(event)
+            self.opacity_canvas.create_rectangle(track_left, track_y - self.slider_height // 2, knob_x,
+                                                 track_y + self.slider_height // 2,
+                                                 fill=self.colors['accent'], outline="")
+            self.opacity_canvas.create_oval(knob_x - self.knob_radius, track_y - self.knob_radius,
+                                            knob_x + self.knob_radius, track_y + self.knob_radius,
+                                            fill=self.colors['accent'], outline="")
 
         def on_slider_drag(event):
-            update_slider_from_event(event)
-
-        def update_slider_from_event(event):
             width = self.opacity_canvas.winfo_width()
             track_left = self.slider_padding + self.knob_radius
             track_right = width - self.slider_padding - self.knob_radius
             track_width = track_right - track_left
-
-            # 计算点击位置对应的值
             x = max(track_left, min(event.x, track_right))
             progress = (x - track_left) / track_width
             value = int(30 + progress * 70)
-
-            # 更新透明度
             self.opacity = value / 100.0
             self.root.attributes('-alpha', self.opacity)
             self.opacity_label.config(text=f"{value}%")
             self.save_config()
-
             draw_slider(value)
 
-        self.opacity_canvas.bind("<Button-1>", on_slider_click)
+        self.opacity_canvas.bind("<Button-1>", on_slider_drag)
         self.opacity_canvas.bind("<B1-Motion>", on_slider_drag)
         self.opacity_canvas.bind("<Configure>", lambda e: draw_slider(int(self.opacity * 100)))
-
-        # 初始绘制
         self.root.after(10, lambda: draw_slider(int(self.opacity * 100)))
 
-        # --- 数据存储 ---
-        tk.Label(content, text="数据存储", fg=self.colors['sub_text'], bg=self.colors['bg'],
+        tk.Label(content, text="数据存储位置", fg=self.colors['sub_text'], bg=self.colors['bg'],
                  font=self.font_ui_small).pack(anchor='w', pady=(20, 5))
         path_box = tk.Frame(content, bg=self.colors['input_bg'], padx=10, pady=10)
         path_box.pack(fill='x')
@@ -559,17 +496,17 @@ class ModernTodoApp:
             if new_dir:
                 self.data_dir = new_dir
                 self.save_config()
+                # 重新计算 data_file_path 并加载数据
+                self.data_file_path = os.path.join(self.data_dir, DATA_FILE_NAME)
                 self.tasks_data = self.load_tasks_data()
                 self.render_tasks()
                 self.settings_win.destroy()
 
-        tk.Button(content, text="更改文件夹...", command=change_path,
-                  bg=self.colors['bg'], fg=self.colors['accent'], bd=0,
-                  font=self.font_ui_bold, cursor="hand2").pack(anchor='e', pady=5)
+        tk.Button(content, text="更改文件夹...", command=change_path, bg=self.colors['bg'], fg=self.colors['accent'],
+                  bd=0, font=self.font_ui_bold, cursor="hand2").pack(anchor='e', pady=5)
 
     # --- 日历弹窗 ---
     def open_calendar(self, event=None):
-        """打开日历弹窗"""
         if self.calendar_win is not None:
             try:
                 if self.calendar_win.winfo_exists():
@@ -584,103 +521,75 @@ class ModernTodoApp:
         self.calendar_win.overrideredirect(True)
         self.calendar_win.configure(bg=self.colors['cal_bg'])
         self.calendar_win.attributes('-topmost', True)
-        # 日历窗口也应用透明度
         self.calendar_win.attributes('-alpha', self.opacity)
+        self.calendar_win.transient(self.root)
 
-        # 根据字号动态计算日历尺寸
-        base_width = 280
-        base_height = 300
+        base_width, base_height = 280, 300
         scale = self.font_size / 14.0
-        cal_width = int(base_width * scale)
-        cal_height = int(base_height * scale)
-
+        cal_width, cal_height = int(base_width * scale), int(base_height * scale)
         x = self.root.winfo_x() + (self.root.winfo_width() - cal_width) // 2
         y = self.root.winfo_y() + 100
         self.calendar_win.geometry(f"{cal_width}x{cal_height}+{x}+{y}")
 
         border_frame = tk.Frame(self.calendar_win, bg=self.colors['border'])
         border_frame.pack(fill='both', expand=True, padx=1, pady=1)
-
         inner = tk.Frame(border_frame, bg=self.colors['cal_bg'])
         inner.pack(fill='both', expand=True)
-
         self.cal_view_date = self.current_date
         self._cal_inner = inner
 
-        def render_cal_grid():
-            for w in self._cal_inner.winfo_children():
-                w.destroy()
+        def close_cal():
+            self.root.unbind_all("<Button-1>")
+            if self.calendar_win: self.calendar_win.destroy()
+            self.calendar_win = None
 
-            # 顶部导航栏
+        def render_cal_grid():
+            for w in self._cal_inner.winfo_children(): w.destroy()
             header = tk.Frame(self._cal_inner, bg=self.colors['cal_bg'])
             header.pack(fill='x', pady=10, padx=10)
+            tk.Button(header, text="◀", command=lambda: change_month(-1), bg=self.colors['cal_bg'],
+                      fg=self.colors['fg'], bd=0, cursor="hand2", font=self.font_cal_day).pack(side='left')
+            tk.Label(header, text=self.cal_view_date.strftime("%Y年 %m月"), bg=self.colors['cal_bg'],
+                     fg=self.colors['fg'], font=self.font_cal_header).pack(side='left', expand=True)
+            tk.Button(header, text="▶", command=lambda: change_month(1), bg=self.colors['cal_bg'], fg=self.colors['fg'],
+                      bd=0, cursor="hand2", font=self.font_cal_day).pack(side='right')
 
-            prev_btn = tk.Button(header, text="◀", command=lambda: change_month(-1),
-                                 bg=self.colors['cal_bg'], fg=self.colors['fg'],
-                                 bd=0, cursor="hand2", font=self.font_cal_day)
-            prev_btn.pack(side='left')
+            close_btn = tk.Label(self.calendar_win, text="×", bg=self.colors['cal_bg'], fg=self.colors['sub_text'],
+                                 font=("Arial", int(self.font_size * 0.9)), cursor="hand2")
+            close_btn.place(relx=1.0, x=-5, y=2, anchor='ne')
+            close_btn.bind("<Button-1>", lambda e: close_cal())
 
-            month_label = tk.Label(header, text=self.cal_view_date.strftime("%Y年 %m月"),
-                                   bg=self.colors['cal_bg'], fg=self.colors['fg'],
-                                   font=self.font_cal_header)
-            month_label.pack(side='left', expand=True)
-
-            next_btn = tk.Button(header, text="▶", command=lambda: change_month(1),
-                                 bg=self.colors['cal_bg'], fg=self.colors['fg'],
-                                 bd=0, cursor="hand2", font=self.font_cal_day)
-            next_btn.pack(side='right')
-
-            # 星期头
             days_header = tk.Frame(self._cal_inner, bg=self.colors['cal_bg'])
             days_header.pack(pady=5)
-            # 根据字号计算宽度
             day_width = max(3, int(4 * (14 / self.font_size)))
             for day in ["一", "二", "三", "四", "五", "六", "日"]:
-                tk.Label(days_header, text=day, width=day_width, fg=self.colors['sub_text'],
-                         bg=self.colors['cal_bg'], font=self.font_cal_weekday).pack(side='left')
+                tk.Label(days_header, text=day, width=day_width, fg=self.colors['sub_text'], bg=self.colors['cal_bg'],
+                         font=self.font_cal_weekday).pack(side='left')
 
-            # 日历网格
             cal = calendar.monthcalendar(self.cal_view_date.year, self.cal_view_date.month)
             grid_frame = tk.Frame(self._cal_inner, bg=self.colors['cal_bg'])
             grid_frame.pack(padx=10, pady=(0, 10))
-
             today = datetime.date.today()
-
             for week in cal:
                 row = tk.Frame(grid_frame, bg=self.colors['cal_bg'])
                 row.pack()
                 for day in week:
                     if day == 0:
-                        tk.Label(row, text=" ", width=day_width, bg=self.colors['cal_bg'],
-                                 font=self.font_cal_day).pack(side='left')
+                        tk.Label(row, text=" ", width=day_width, bg=self.colors['cal_bg'], font=self.font_cal_day).pack(
+                            side='left')
                     else:
-                        is_today = (day == today.day and
-                                    self.cal_view_date.month == today.month and
-                                    self.cal_view_date.year == today.year)
-
-                        is_selected = (day == self.current_date.day and
-                                       self.cal_view_date.month == self.current_date.month and
-                                       self.cal_view_date.year == self.current_date.year)
-
-                        if is_today:
-                            fg_c = '#FFFFFF'
-                            bg_c = self.colors['cal_today']
-                        elif is_selected:
-                            fg_c = self.colors['accent']
-                            bg_c = self.colors['cal_bg']
-                        else:
-                            fg_c = self.colors['fg']
-                            bg_c = self.colors['cal_bg']
-
-                        btn = tk.Button(row, text=str(day), width=day_width, bd=0,
-                                        bg=bg_c, fg=fg_c,
+                        is_today = (
+                                    day == today.day and self.cal_view_date.month == today.month and self.cal_view_date.year == today.year)
+                        is_selected = (
+                                    day == self.current_date.day and self.cal_view_date.month == self.current_date.month and self.cal_view_date.year == self.current_date.year)
+                        bg_c = self.colors['cal_today'] if is_today else (
+                            self.colors['cal_bg'] if is_selected else self.colors['cal_bg'])
+                        fg_c = '#FFFFFF' if is_today else (self.colors['accent'] if is_selected else self.colors['fg'])
+                        btn = tk.Button(row, text=str(day), width=day_width, bd=0, bg=bg_c, fg=fg_c,
                                         font=self.font_cal_day_bold if is_today else self.font_cal_day,
-                                        command=lambda d=day: select_date(d),
-                                        cursor="hand2",
-                                        activebackground=self.colors['hover'],
-                                        activeforeground=self.colors['fg'])
+                                        command=lambda d=day: select_date(d), cursor="hand2",
+                                        activebackground=self.colors['hover'], activeforeground=self.colors['fg'])
                         btn.pack(side='left')
-
                         if not is_today:
                             btn.bind("<Enter>", lambda e, b=btn: b.config(bg=self.colors['hover']))
                             btn.bind("<Leave>", lambda e, b=btn, c=bg_c: b.config(bg=c))
@@ -697,38 +606,29 @@ class ModernTodoApp:
         def select_date(day):
             self.current_date = datetime.date(self.cal_view_date.year, self.cal_view_date.month, day)
             self.render_tasks()
-            self._close_calendar()
+            close_cal()
 
-        # 关闭按钮
-        close_btn = tk.Label(self.calendar_win, text="×", bg=self.colors['cal_bg'],
-                             fg=self.colors['sub_text'], font=("Arial", int(self.font_size * 0.9)), cursor="hand2")
-        close_btn.place(relx=1.0, x=-10, y=5, anchor='ne')
-        close_btn.bind("<Button-1>", lambda e: self._close_calendar())
-        close_btn.bind("<Enter>", lambda e: close_btn.config(fg=self.colors['fg']))
-        close_btn.bind("<Leave>", lambda e: close_btn.config(fg=self.colors['sub_text']))
-
-        render_cal_grid()
-        self.calendar_win.focus_force()
-
-    def _close_calendar(self):
-        """安全关闭日历窗口"""
-        if self.calendar_win:
+        def check_click_outside(event):
             try:
-                self.calendar_win.destroy()
+                widget = event.widget
+                while widget:
+                    if widget == self.calendar_win: return
+                    widget = widget.master
+                close_cal()
             except:
                 pass
-            self.calendar_win = None
+
+        self.root.after(100, lambda: self.root.bind_all("<Button-1>", check_click_outside))
+        render_cal_grid()
+        self.calendar_win.focus_force()
 
     # --- 渲染逻辑 ---
     def render_tasks(self):
         self.update_date_display()
         bg_color = self.colors['bg']
-
         for w in self.scroll_frame.winfo_children(): w.destroy()
-
         date_key = self.current_date.strftime("%Y-%m-%d")
         tasks = self.tasks_data.get(date_key, [])
-
         if not tasks:
             f = tk.Frame(self.scroll_frame, bg=bg_color)
             f.pack(pady=40, fill='both', expand=True)
@@ -736,50 +636,33 @@ class ModernTodoApp:
             tk.Label(f, text="今日无事，保持专注", fg=self.colors['sub_text'], bg=bg_color, font=("Segoe UI", 11)).pack(
                 pady=5, anchor='center')
             return
-
-        # 计算复选框大小（根据字号）
         checkbox_size = max(18, int(self.font_size * 1.4))
-
         for i, task in enumerate(tasks):
             row = tk.Frame(self.scroll_frame, bg=bg_color)
             row.pack(fill='x', pady=6)
-
-            # 使用自定义复选框
-            checkbox = self.create_checkbox(
-                row,
-                checked=task['done'],
-                size=checkbox_size,
-                command=lambda idx=i: self.toggle_task(idx)
-            )
+            checkbox = self.create_checkbox(row, checked=task['done'], size=checkbox_size,
+                                            command=lambda idx=i: self.toggle_task(idx))
             checkbox.pack(side='left', padx=(0, 10), pady=2)
-
-            # 任务文本
             text_fg = self.colors['fg'] if not task['done'] else self.colors['sub_text']
-            lbl = tk.Label(row, text=task['text'], fg=text_fg, bg=bg_color,
-                           font=self.font_main, anchor='w', wraplength=260, justify='left')
+            lbl = tk.Label(row, text=task['text'], fg=text_fg, bg=bg_color, font=self.font_main, anchor='w',
+                           wraplength=260, justify='left')
             lbl.pack(side='left', fill='x', expand=True, pady=2)
-
-            # 点击文本也可以切换状态
             lbl.bind("<Button-1>", lambda e, idx=i: self.toggle_task(idx))
             lbl.config(cursor="hand2")
-
-            # 删除按钮
-            d_btn = tk.Label(row, text="×", fg=bg_color, bg=bg_color,
-                             font=("Arial", 16), cursor="hand2", width=2)
+            d_btn = tk.Label(row, text="×", fg=bg_color, bg=bg_color, font=("Arial", 16), cursor="hand2", width=2)
             d_btn.pack(side='right', anchor='n')
             d_btn.bind("<Button-1>", lambda e, idx=i: self.delete_task(idx))
 
-            # 悬停效果
             def on_row_enter(e, b=d_btn, r=row, t=lbl, c=checkbox, bg=bg_color):
                 hover_bg = self.colors['hover']
-                r.config(bg=hover_bg)
-                t.config(bg=hover_bg)
+                r.config(bg=hover_bg);
+                t.config(bg=hover_bg);
                 c.config(bg=hover_bg)
                 b.config(bg=hover_bg, fg=self.colors['sub_text'])
 
             def on_row_leave(e, b=d_btn, r=row, t=lbl, c=checkbox, bg=bg_color):
-                r.config(bg=bg)
-                t.config(bg=bg)
+                r.config(bg=bg);
+                t.config(bg=bg);
                 c.config(bg=bg)
                 b.config(bg=bg, fg=bg)
 
