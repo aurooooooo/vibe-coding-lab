@@ -1,10 +1,6 @@
 # Welcome to My Vibe Coding Lab 🧪
 
-![Repository Preview](./image_8d0e3a.png)
-
 > **“代码不再是门槛，想法才是。”**
-
-嘿！欢迎来到我的数字实验田。🌱
 
 这里存放的不是那种苦哈哈敲出来的代码，而是我通过 **#VibeCoding** 模式——也就是动动嘴皮子、打打字，指挥 AI 帮我构建的个性化工具集。
 
@@ -59,6 +55,7 @@
 
 这种创造的快感，真的谁用谁知道。Enjoy! 🚀
 
+没错，Readme我也是AI生成的，哈哈哈
 ---
 
 <p align="center">
