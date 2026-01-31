@@ -29,18 +29,18 @@ DRIVER_PATH = r"D:\edgedriver\msedgedriver.exe"
 current_dir = os.path.dirname(os.path.abspath(__file__))
 USER_DATA_PATH = os.path.join(current_dir, "AutomationProfile")
 
+# 3. 多用户配置列表
 TARGET_USERS = [
     {
-        "id": "1453779130",
-        "name": "陌楠",
-        "date": "2022-10-26",
-        "template": "宝宝，今天是爱你的{days}天"
+        "id": "xxx【这里填写抖音号】",
+        "name": "xxx 【这里填写抖音名称，推荐给目标备注后，填写备注名】",
+        "date": "2022-10-26  【这里设置一个日期】",
+        "template": "宝宝，今天是爱你的{days}天 【这里自动识别{days}并计算天数】"
     },
     {
-        "id": "373314716",
-        "name": "亩0",
-        "date": "2004-10-21",
-        "template": "bro，你已经活了{days}天了，真棒"
+        "id": "xxx",
+        "name": "xxx",
+        "msg_direct"："这是自动发送的消息 【也可以直接使用这个配置发送】"
     }
 ]
 
@@ -240,4 +240,5 @@ def send_douyin_msg():
 
 
 if __name__ == "__main__":
+
     send_douyin_msg()
